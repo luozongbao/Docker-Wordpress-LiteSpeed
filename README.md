@@ -46,18 +46,23 @@ naming convention).
 ```
 .
 ├── docker-compose.yml          # 2-service stack definition
-├── .env.example                # Template for environment variables
+├── .env.example                # Template for environment variables (copy to .env)
 ├── .gitignore
 ├── .dockerignore
 ├── README.md                   # This file
 ├── database/                   # (empty) DB ships from the named volume
 ├── www/                        # Your WordPress document root
-├── ols-conf/                   # OpenLiteSpeed configuration directory
-│   ├── httpd_config.conf       # Main OLS config (listeners, virtual hosts)
-│   └── php.ini                 # PHP runtime settings for LSPHP
-└── ols-admin-conf/             # OLS WebAdmin config (admin credentials)
-    └── admin_config.conf
+│                              # (bind-mounted into the OLS image at the
+│                              #  default vhost docroot /var/www/vhosts/localhost/html)
+└── logs/                       # OLS access + error logs (bind-mounted to
+                               #  /usr/local/lsws/logs in the container)
 ```
+
+> **No OLS config files are checked into this repo.** The image's built-in
+> `localhost` vhost already points at `/var/www/vhosts/localhost/html` with
+> an LSPHP handler and Apache-compatible `.htaccess` rewriting — which is
+> exactly what WordPress needs. The stack only customizes the WebAdmin
+> password on container start.
 
 ---
 
@@ -90,19 +95,26 @@ naming convention).
    | `DATABASEUSER`        | Database user                              |
    | `DATABASEPASS`        | Database password                          |
    | `MYSQL_ROOT_PASSWORD` | MariaDB root password                      |
+   | `OLS_ADMIN_USER`      | OLS WebAdmin username (default: `admin`)   |
+   | `OLS_ADMIN_PASSWORD`  | OLS WebAdmin password (default: `P@ssw0rd`)|
 
 2. **Drop your WordPress files into `www/`** (or symlink / bind-mount them in).
 
-3. **Review & customize the OLS configs** in `ols-conf/` and the admin credentials
-   in `ols-admin-conf/admin_config.conf`.
+   The directory is bind-mounted to the image's default vhost docroot
+   (`/var/www/vhosts/localhost/html`), so no OLS configuration is required.
 
-4. **Start the stack:**
+3. **Start the stack:**
 
    ```bash
    docker compose up -d
    ```
 
-5. **Verify:**
+   On first start the container's `command:` writes the OLS WebAdmin
+   credentials to `/usr/local/lsws/admin/conf/htpasswd` using
+   `openssl passwd -1`, so `OLS_ADMIN_USER` / `OLS_ADMIN_PASSWORD` from
+   your `.env` are picked up automatically.
+
+4. **Verify:**
 
    ```bash
    docker compose ps
@@ -117,17 +129,25 @@ naming convention).
 Most production hardening for OLS is about **not exposing the WebAdmin**
 beyond `localhost`. This section walks through a safe, repeatable setup.
 
+> **No OLS config files live in this repo** — the `litespeedtech/openlitespeed`
+> image already ships a working `localhost` vhost with LSPHP and
+> `.htaccess` rewriting. The stack only customizes the **WebAdmin password**
+> on container start using the `OLS_ADMIN_USER` / `OLS_ADMIN_PASSWORD` env
+> vars in `.env`.
+
 ### 1. Initial deployment checklist
 
-- [ ] **Change the WebAdmin password** in `ols-admin-conf/admin_config.conf`
-      before the first `docker compose up`. The shipped default is unsafe.
+- [ ] **Change the WebAdmin password** — set `OLS_ADMIN_USER` and
+      `OLS_ADMIN_PASSWORD` in `.env` before the first `docker compose up`.
+      The shipped default (`admin` / `P@ssw0rd`) is unsafe.
 - [ ] **Restrict WebAdmin (port 7080)** — see "Hardening" below.
-- [ ] **Disable 443 (HTTPS) listener** in `ols-conf/httpd_config.conf` if you
-      terminate TLS at a CDN (Cloudflare / Fastly / etc.). Otherwise add a
-      real certificate (see "TLS").
+- [ ] **Disable 443 (HTTPS) listener** if you terminate TLS at a CDN
+      (Cloudflare / Fastly / etc.). Otherwise add a real certificate —
+      see "TLS".
 - [ ] **Set real client IP** behind your CDN by enabling the
-      `Use Client IP in Header` option (already declared in `httpd_config.conf`).
-- [ ] **Rotate secrets** — never commit the real `.env` or `admin_config.conf`.
+      `Use Client IP in Header` option in the OLS WebAdmin (the image's
+      default vhost already has the right listener plumbing).
+- [ ] **Rotate secrets** — never commit the real `.env` to version control.
 
 ### 2. Hardening the WebAdmin (port 7080)
 
@@ -206,8 +226,8 @@ sudo iptables -I DOCKER-USER -p tcp --dport 7080 ! -s YOUR.PUBLIC.IP -j DROP
 ### 3. Enabling TLS (optional, when not fronted by a CDN)
 
 If you terminate TLS in OLS instead of in Cloudflare/etc., drop your key and
-certificate into the OLS conf directory and reference them in
-`ols-conf/httpd_config.conf`:
+certificate into a path the OLS image can read and point the `HTTPS`
+listener at them via the OLS WebAdmin (or `docker compose exec`):
 
 ```bash
 # Generate a self-signed cert for testing
@@ -218,22 +238,14 @@ docker compose exec wordpress bash -c \
      -subj '/CN=your-domain.example'"
 ```
 
-Then in `ols-conf/httpd_config.conf` update the `HTTPS` listener:
+Then update the `HTTPS` listener's `keyFile` / `certFile` in the WebAdmin
+(Listener → HTTPS → SSL → Private Key / Certificate) to point at those
+paths.
 
-```yaml
-listener:
-  - address: *:443
-    secure: 1
-    name: HTTPS
-    keyFile:  /usr/local/lsws/conf/vhosts/key.pem
-    certFile: /usr/local/lsws/conf/vhosts/cert.pem
-```
-
-Reload OLS:
+Reload OLS after the change:
 
 ```bash
-docker compose exec wordpress bash -c \
-    "kill -USR2 1 && /usr/local/lsws/bin/lswsctrl restart"
+docker compose exec wordpress /usr/local/lsws/bin/lswsctrl graceful
 ```
 
 For production, prefer **Let's Encrypt** via `acme.sh` or a Cloudflare
@@ -242,12 +254,9 @@ Origin CA certificate (if fronted by Cloudflare).
 ### 4. Reverse-proxy / CDN real client IP
 
 When sitting behind Cloudflare (or any reverse proxy that sets
-`CF-Connecting-IP` / `X-Forwarded-For`), OLS needs to trust those headers:
-
-```apache
-# Inside the `virtualHost:` block of ols-conf/httpd_config.conf
-useIpInProxyHeader: 1
-```
+`CF-Connecting-IP` / `X-Forwarded-For`), OLS needs to trust those headers.
+In the OLS WebAdmin, go to **Virtual Host → localhost → General → Use
+Client IP in Header** and set it to `1`.
 
 This makes PHP / WordPress see the visitor's real IP rather than the proxy IP.
 
@@ -298,18 +307,28 @@ docker compose exec database mysqldump \
 | --------------------- | ------------------------ | -------------------------------------- |
 | `80:80`, `443:443`    | published                | Public HTTP / HTTPS                    |
 | `7080:7080`           | **change to 127.0.0.1**  | WebAdmin — see "Hardening"             |
+| `./www`               | bind mount               | WordPress docroot (`/var/www/vhosts/localhost/html` inside the container) |
+| `./logs`              | bind mount               | OLS logs (`/usr/local/lsws/logs` inside the container) |
 | `app-network`         | bridge network           | Internal service-to-service traffic    |
 | External volume       | `<project>_db_data`      | Holds MariaDB data, never managed by this repo |
 
-### `ols-conf/httpd_config.conf`
+### `.env`
 
-- `serverName` — change per project
-- `indexFiles` — defaults to `index.php,index.html`
-- `log:` / `accessLog:` — log levels & rotation policy
+| Variable              | Description                                            |
+| --------------------- | ------------------------------------------------------ |
+| `DATABASENAME`        | MariaDB database name (matches `wp-config.php`)        |
+| `DATABASEUSER`        | MariaDB user                                           |
+| `DATABASEPASS`        | MariaDB password                                       |
+| `MYSQL_ROOT_PASSWORD` | MariaDB root password (default: `rootpassword`)        |
+| `OLS_ADMIN_USER`      | OLS WebAdmin username (default: `admin`)               |
+| `OLS_ADMIN_PASSWORD`  | OLS WebAdmin password (default: `P@ssw0rd`)            |
 
-### `ols-conf/php.ini`
-
-Tuned for WordPress. Adjust these per workload:
+The OLS image's built-in PHP (`/usr/local/lsws/lsphp8`) has a
+`php.ini` preinstalled at `/usr/local/lsws/conf/php.ini`. To override
+PHP settings, drop a custom file into `./www/php.ini` and add
+`phpIniOverride { phpIni /var/www/vhosts/localhost/html/php.ini }`
+in the WebAdmin under **Virtual Host → localhost → General** — or skip
+the override and rely on the image defaults tuned for WordPress:
 
 ```ini
 memory_limit = 256M
@@ -317,14 +336,6 @@ upload_max_filesize = 64M
 post_max_size = 64M
 max_execution_time = 300
 ```
-
-### `ols-admin-conf/admin_config.conf`
-
-| Field          | Required change                       |
-| -------------- | ------------------------------------- |
-| `adminUser`    | leave or change                       |
-| `adminPassword`| **change before first deploy**        |
-| `listener`     | keep `*:7080` inside the container; restrict on the host|
 
 ---
 
@@ -380,8 +391,38 @@ container UID or set up the `www-data` user manually:
 
 ```bash
 docker compose exec --user root wordpress \
-    chown -R nobody:nogroup /var/www/html
+    chown -R nobody:nogroup /var/www/vhosts/localhost/html
 ```
+
+### OLS keeps restarting / returns HTTP 503
+
+This usually means LSPHP failed to fork. Check:
+
+```bash
+docker compose logs wordpress | tail -50
+docker compose exec wordpress cat /usr/local/lsws/logs/error.log | tail -30
+```
+
+The most common causes are:
+
+- A malformed `php.ini` in `./www` (e.g. invalid syntax) — temporarily
+  remove it and restart.
+- The host machine's `ulimit -n` is too low for the `Max Connections`
+  setting in OLS. Bump it on the host: `ulimit -n 65535`.
+
+### `wp-config.php` is missing
+
+The image's docroot ships `wp-config-sample.php` only. Either:
+
+- Copy it and edit values manually:
+
+  ```bash
+  cp www/wp-config-sample.php www/wp-config.php
+  $EDITOR www/wp-config.php   # set DB_NAME / DB_USER / DB_PASSWORD / DB_HOST='database'
+  ```
+
+- Or open `http://localhost` in your browser and run the 5-minute WordPress
+  installer (it will create `wp-config.php` for you).
 
 ---
 
