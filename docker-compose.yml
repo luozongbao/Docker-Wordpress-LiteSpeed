@@ -62,4 +62,4 @@ networks:
 volumes:
   brk_data:
     external: true
-    name: wwwbanrimkwaecom_brk_data
+    name: ${DB_VOLUME_NAME}
