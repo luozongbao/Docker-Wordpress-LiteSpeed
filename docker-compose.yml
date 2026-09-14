@@ -14,9 +14,6 @@ services:
     networks:
       - app-network
 
-  # OpenLiteSpeed — replaces the old nginx container.
-  # OLS runs LSPHP (LSAPI) inside this single container, so PHP-FPM as a
-  # separate service is no longer needed.
   wordpress:
     image: litespeedtech/openlitespeed:latest
     container_name: wp_ols
@@ -27,10 +24,13 @@ services:
       - "7080:7080"   # WebAdmin Console of OpenLiteSpeed
     environment:
       - TZ=Asia/Bangkok
+      - ADMIN_USER=${OLS_ADMIN_USERNAME:-admin}
+      - ADMIN_PASSWORD=${OLS_ADMIN_PASSWORD:-P@ssw0rd}
     volumes:
-      - ./www:/var/www/html
-      - ./ols-conf:/usr/local/lsws/conf
-      - ./ols-admin-conf:/usr/local/lsws/admin/conf
+      - ./www:/var/www/vhosts/localhost/html
+      - ./conf:/usr/local/lsws/conf
+      - ./logs:/usr/local/lsws/logs
+      - ./admin-conf:/usr/local/lsws/admin/conf
     depends_on:
       - database
     networks:
@@ -42,4 +42,3 @@ networks:
 
 volumes:
   db_data:
-    external: true

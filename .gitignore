@@ -29,3 +29,7 @@ database/*
 *.conf0
 *.conf~
 *#
+
+# logs
+*.log
+logs/*
