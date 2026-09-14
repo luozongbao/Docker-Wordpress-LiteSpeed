@@ -10,9 +10,9 @@ services:
       - MYSQL_PASSWORD=${DATABASEPASS}
       - MYSQL_ROOT_PASSWORD=${MYSQL_ROOT_PASSWORD:-rootpassword}
     volumes:
-      - brk_data:/var/lib/mysql
+      - db_data:/var/lib/mysql
     networks:
-      - brk-network
+      - app-network
 
   # OpenLiteSpeed — replaces the old nginx container.
   # OLS runs LSPHP (LSAPI) inside this single container, so PHP-FPM as a
@@ -34,13 +34,12 @@ services:
     depends_on:
       - database
     networks:
-      - brk-network
+      - app-network
 
 networks:
-  brk-network:
+  app-network:
     driver: bridge
 
 volumes:
-  brk_data:
+  db_data:
     external: true
-    name: ${DB_VOLUME_NAME}

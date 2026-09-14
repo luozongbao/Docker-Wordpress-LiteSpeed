@@ -21,3 +21,11 @@ database/*
 .vscode/
 .idea/
 *.swp
+*~
+
+# Editor backups (e.g. foo.conf.txt, foo.conf0, #foo.conf#)
+*.conf.txt
+*.conf.bak
+*.conf0
+*.conf~
+*#

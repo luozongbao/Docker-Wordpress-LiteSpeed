@@ -1,34 +1,43 @@
-# Banrimkwae.com — WordPress on OpenLiteSpeed
+# WordPress + OpenLiteSpeed Docker Stack
 
-This repository hosts the **production** WordPress stack for `banrimkwae.com` using
+A self-contained, **production-ready** WordPress stack built on top of
 **OpenLiteSpeed** (OLS) + **LSPHP** and **MariaDB**, all wired together with
 `docker compose`.
 
-This configuration replaces the previous Nginx + PHP-FPM stack that lives in
-`/home/zongbao/www.banrimkwae.com/`.
+This template is **project-agnostic** — drop any WordPress site into `www/`,
+point it at any existing MariaDB volume, and you are ready to go.
 
 ---
 
 ## Why OpenLiteSpeed?
 
 OpenLiteSpeed bundles **LSPHP (LiteSpeed PHP, a.k.a. LSAPI)** into the same
-container as the web server — there is no separate PHP-FPM container needed.
-Compared to the old Nginx + PHP-FPM setup this means:
+container as the web server — there is **no separate PHP-FPM container**.
 
-- **Fewer containers** (2 instead of 3)
-- **Faster PHP** via in-process LSAPI (no FPM socket hop)
-- **`.htaccess`-like** per-directory rewrites (WordPress permalinks) work natively
+| Stack                    | Containers | PHP runtime  | Notes                             |
+| ------------------------ | ---------- | ------------ | --------------------------------- |
+| **Old** Nginx + PHP-FPM  | 3          | PHP-FPM      | extra socket hop per request      |
+| **New** OpenLiteSpeed    | 2          | LSPHP (LSAPI)| in-process PHP, `.htaccess`-native|
+
+Other benefits:
+
+- Built-in **HTTP/3** and **QUIC** support
+- **LiteSpeed Cache** WordPress plugin compatibility
+- Compatible with **Apache `htaccess`** rewrite rules
+- Lower memory footprint (no FPM worker pool)
 
 ---
 
 ## Architecture
 
-| Service      | Image                            | Role                                          |
-| ------------ | -------------------------------- | --------------------------------------------- |
-| `database`   | `mariadb:10.11`                  | MariaDB — re-uses existing `brk_data` volume  |
-| `wordpress`  | `litespeedtech/openlitespeed`    | OLS web server **+** LSPHP runtime            |
+| Service      | Image                          | Role                                            |
+| ------------ | ------------------------------ | ----------------------------------------------- |
+| `wordpress`  | `litespeedtech/openlitespeed`  | Web server **+** LSPHP runtime (single image)   |
+| `database`   | `mariadb:10.11`                | MariaDB — attaches to an external named volume  |
 
-Both services share the user-defined bridge network `brk-network`.
+Both services share a user-defined bridge network (named
+`<project-directory>_app-network` by default — Docker Compose's standard
+naming convention).
 
 ---
 
@@ -36,21 +45,18 @@ Both services share the user-defined bridge network `brk-network`.
 
 ```
 .
-├── docker-compose.yml          # Main stack definition (2 services)
+├── docker-compose.yml          # 2-service stack definition
 ├── .env.example                # Template for environment variables
 ├── .gitignore
 ├── .dockerignore
 ├── README.md                   # This file
-├── database/.gitkeep           # empty (DB is read from existing volume)
+├── database/                   # (empty) DB ships from the named volume
+├── www/                        # Your WordPress document root
 ├── ols-conf/                   # OpenLiteSpeed configuration directory
-│   ├── httpd_config.conf       # Main OLS config (listeners, virtual hosts, ...)
-│   ├── php.ini                 # PHP runtime settings used by LSPHP
-│   └── vhosts/
-│       └── banrimkwae/
-│           └── vhconf.conf     # Per-vhost config (rewrite, security, cache, ...)
-├── ols-admin-conf/             # OLS WebAdmin config (admin password, listener)
-│   └── admin_config.conf
-└── www/                        # WordPress installation (bind-mounted into container)
+│   ├── httpd_config.conf       # Main OLS config (listeners, virtual hosts)
+│   └── php.ini                 # PHP runtime settings for LSPHP
+└── ols-admin-conf/             # OLS WebAdmin config (admin credentials)
+    └── admin_config.conf
 ```
 
 ---
@@ -59,53 +65,44 @@ Both services share the user-defined bridge network `brk-network`.
 
 - Docker Engine 20.10+
 - Docker Compose v2 (`docker compose` CLI)
-- The existing Docker volume referenced by `DB_VOLUME_NAME` in `.env`
-  (default: `wwwbanrimkwaecom_brk_data`) is already on the host. It was
-  created by the previous Nginx stack and contains the production database
-  — **do not delete it**.
+- An existing MariaDB Docker named volume (or a SQL dump to bootstrap one)
 
-Verify it exists:
-
-```bash
-docker volume inspect $(grep DB_VOLUME_NAME .env | cut -d= -f2)
-```
-
-If it is missing, see the **Recovery** section below.
+> **Important:** the MariaDB data is held in an **external** Docker volume
+> (named `<project-directory>_db_data` by default). This repo never creates or
+> destroys it — your data outlives the stack itself.
 
 ---
 
-## First-time setup
+## Quick start
 
-1. Copy the example env file and edit values:
+1. **Copy and edit your environment file:**
 
    ```bash
    cp .env.example .env
    nano .env
    ```
 
-   At minimum set:
+   Required variables:
 
-   - `DATABASENAME` / `DATABASEUSER` / `DATABASEPASS` — must match the
-     values in `www/wp-config.php`.
-   - `DB_VOLUME_NAME` — the existing volume name on the host
-     (default already points at the production volume).
-   - `MYSQL_ROOT_PASSWORD` — must match what was used with the old stack
-     if you re-use a previously initialized data directory.
+   | Variable              | Description                                |
+   | --------------------- | ------------------------------------------ |
+   | `DATABASENAME`        | Database name (must match `wp-config.php`) |
+   | `DATABASEUSER`        | Database user                              |
+   | `DATABASEPASS`        | Database password                          |
+   | `MYSQL_ROOT_PASSWORD` | MariaDB root password                      |
 
-2. Make sure `www/` contains the WordPress installation (it should already —
-   it is the same folder previously served by Nginx).
+2. **Drop your WordPress files into `www/`** (or symlink / bind-mount them in).
 
-3. OLS configs under `ols-conf/` are mounted into `/usr/local/lsws/conf`.
-   `ols-admin-conf/` is mounted into `/usr/local/lsws/admin/conf` so you
-   can change the WebAdmin password without losing it across `up`.
+3. **Review & customize the OLS configs** in `ols-conf/` and the admin credentials
+   in `ols-admin-conf/admin_config.conf`.
 
-4. Bring the stack up:
+4. **Start the stack:**
 
    ```bash
    docker compose up -d
    ```
 
-5. Verify:
+5. **Verify:**
 
    ```bash
    docker compose ps
@@ -115,47 +112,170 @@ If it is missing, see the **Recovery** section below.
 
 ---
 
-## Migrating from the old Nginx stack
+## OpenLiteSpeed on a production server
 
-The old stack lives at `/home/zongbao/www.banrimkwae.com/`.
-The MariaDB **volume is shared** between the two stacks via the external
-volume referenced by `DB_VOLUME_NAME`, so database data is preserved.
+Most production hardening for OLS is about **not exposing the WebAdmin**
+beyond `localhost`. This section walks through a safe, repeatable setup.
 
-Migration steps:
+### 1. Initial deployment checklist
 
-```bash
-# 1. Bring just the database container up first (re-attaches to existing volume)
-cd /home/zongbao/banrimkwae.com
-docker compose up -d database
+- [ ] **Change the WebAdmin password** in `ols-admin-conf/admin_config.conf`
+      before the first `docker compose up`. The shipped default is unsafe.
+- [ ] **Restrict WebAdmin (port 7080)** — see "Hardening" below.
+- [ ] **Disable 443 (HTTPS) listener** in `ols-conf/httpd_config.conf` if you
+      terminate TLS at a CDN (Cloudflare / Fastly / etc.). Otherwise add a
+      real certificate (see "TLS").
+- [ ] **Set real client IP** behind your CDN by enabling the
+      `Use Client IP in Header` option (already declared in `httpd_config.conf`).
+- [ ] **Rotate secrets** — never commit the real `.env` or `admin_config.conf`.
 
-# 2. Stop the old stack
-cd /home/zongbao/www.banrimkwae.com
-docker compose down
+### 2. Hardening the WebAdmin (port 7080)
 
-# 3. Bring up the full new stack
-cd /home/zongbao/banrimkwae.com
-docker compose up -d
+By default `docker-compose.yml` publishes `7080` on `0.0.0.0`, which is
+**not safe on a public server**. Choose one of the following patterns:
+
+#### Option A — Bind WebAdmin to localhost only
+
+Edit `docker-compose.yml` and replace the bare port with an explicit host IP
+loopback binding:
+
+```yaml
+ports:
+  - "127.0.0.1:7080:7080"   # only reachable from the server itself
 ```
 
-> ℹ️  `docker compose down` on the old stack (without `-v`) keeps the named
->  volume intact. **Never** run `docker compose down -v` — that would drop
->  the MariaDB data volume.
+Then reach it locally:
+
+```bash
+# On the server
+curl -k https://127.0.0.1:7080
+```
+
+#### Option B — Don't publish 7080 at all, access via SSH tunnel (recommended)
+
+Remove the `7080` mapping from `docker-compose.yml` entirely (or change it to
+`127.0.0.1:7080:7080` to keep it bound to localhost on the host), then on
+your **laptop**:
+
+```bash
+# Forward local port 7080 → remote 7080 over SSH
+ssh -L 7080:127.0.0.1:7080 user@your-server.example.com
+```
+
+Open <https://localhost:7080> in your browser. The traffic stays on the
+SSH channel — it is **encrypted and never reaches the public internet**.
+
+Useful variations:
+
+```bash
+# Keep the tunnel alive through NAT / flaky networks
+ssh -L 7080:127.0.0.1:7080 -o ServerAliveInterval=30 \
+    -o ExitOnForwardFailure=yes user@your-server.example.com
+
+# Use a custom local port
+ssh -L 17080:127.0.0.1:7080 user@your-server.example.com
+
+# Forward multiple admin ports through one session
+ssh -L 7080:127.0.0.1:7080 -L 3306:127.0.0.1:3306 user@your-server.example.com
+
+# As an ad-hoc SSH config entry
+# ~/.ssh/config:
+Host brk-prod
+  HostName your-server.example.com
+  User deploy
+  LocalForward 127.0.0.1:7080 127.0.0.1:7080
+  ServerAliveInterval 30
+```
+
+Then `ssh brk-prod` and open <https://localhost:7080>.
+
+#### Option C — Firewall it
+
+Keep `0.0.0.0:7080` published but restrict at the OS level with
+`ufw` / `iptables` / a cloud security group:
+
+```bash
+# ufw — only allow your IP
+sudo ufw allow from YOUR.PUBLIC.IP to any port 7080 proto tcp
+sudo ufw deny 7080
+
+# Or with iptables
+sudo iptables -I DOCKER-USER -p tcp --dport 7080 ! -s YOUR.PUBLIC.IP -j DROP
+```
+
+### 3. Enabling TLS (optional, when not fronted by a CDN)
+
+If you terminate TLS in OLS instead of in Cloudflare/etc., drop your key and
+certificate into the OLS conf directory and reference them in
+`ols-conf/httpd_config.conf`:
+
+```bash
+# Generate a self-signed cert for testing
+docker compose exec wordpress bash -c \
+    "openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
+     -keyout /usr/local/lsws/conf/vhosts/key.pem \
+     -out    /usr/local/lsws/conf/vhosts/cert.pem \
+     -subj '/CN=your-domain.example'"
+```
+
+Then in `ols-conf/httpd_config.conf` update the `HTTPS` listener:
+
+```yaml
+listener:
+  - address: *:443
+    secure: 1
+    name: HTTPS
+    keyFile:  /usr/local/lsws/conf/vhosts/key.pem
+    certFile: /usr/local/lsws/conf/vhosts/cert.pem
+```
+
+Reload OLS:
+
+```bash
+docker compose exec wordpress bash -c \
+    "kill -USR2 1 && /usr/local/lsws/bin/lswsctrl restart"
+```
+
+For production, prefer **Let's Encrypt** via `acme.sh` or a Cloudflare
+Origin CA certificate (if fronted by Cloudflare).
+
+### 4. Reverse-proxy / CDN real client IP
+
+When sitting behind Cloudflare (or any reverse proxy that sets
+`CF-Connecting-IP` / `X-Forwarded-For`), OLS needs to trust those headers:
+
+```apache
+# Inside the `virtualHost:` block of ols-conf/httpd_config.conf
+useIpInProxyHeader: 1
+```
+
+This makes PHP / WordPress see the visitor's real IP rather than the proxy IP.
+
+### 5. Graceful reloads (after editing configs)
+
+```bash
+# Pick up new OLS configs without dropping in-flight requests
+docker compose exec wordpress /usr/local/lsws/bin/lswsctrl graceful
+
+# Or restart the container (heavier)
+docker compose restart wordpress
+```
 
 ---
 
 ## Day-to-day commands
 
 ```bash
-# Start / stop
+# Stack lifecycle
 docker compose up -d
-docker compose down
+docker compose down          # keep DB volume
 docker compose restart wordpress
 
 # Logs
 docker compose logs -f wordpress
 docker compose logs -f database
 
-# Shell into a service
+# Shell access
 docker compose exec wordpress bash
 docker compose exec database bash
 
@@ -164,41 +284,75 @@ docker compose exec database mysqldump \
     -u root -p"${MYSQL_ROOT_PASSWORD:-rootpassword}" \
     ${DATABASENAME} > backup-$(date +%F).sql
 
-# OpenLiteSpeed WebAdmin UI
-# https://<server-ip>:7080
+# OpenLiteSpeed WebAdmin (after SSH tunnel)
+# https://localhost:7080
 ```
 
 ---
 
-## Key OpenLiteSpeed notes
+## Configuration reference
 
-- **Cloudflare real-IP**: OLS inherits Cloudflare's `CF-Connecting-IP` so
-  PHP sees the real visitor IP. Make sure the cluster is behind Cloudflare
-  when using `vhconf.conf`.
-- **`/context/` path**: protected with the same hard-coded token used in
-  the old Nginx config.
-- **Upload limit**: 64 MB, controlled by both OLS and PHP (`upload_max_filesize`,
-  `post_max_size` in `ols-conf/php.ini`).
-- **HTTPS**: port 443 is exposed; drop Cloudflare Origin TLS certs into
-  `ols-conf/vhosts/banrimkwae/` and reference them in `vhconf.conf`.
-- **WebAdmin port 7080** is exposed; treat the admin password in
-  `ols-admin-conf/admin_config.conf` like a secret.
+### `docker-compose.yml`
+
+| Field                 | Default                  | Notes                                  |
+| --------------------- | ------------------------ | -------------------------------------- |
+| `80:80`, `443:443`    | published                | Public HTTP / HTTPS                    |
+| `7080:7080`           | **change to 127.0.0.1**  | WebAdmin — see "Hardening"             |
+| `app-network`         | bridge network           | Internal service-to-service traffic    |
+| External volume       | `<project>_db_data`      | Holds MariaDB data, never managed by this repo |
+
+### `ols-conf/httpd_config.conf`
+
+- `serverName` — change per project
+- `indexFiles` — defaults to `index.php,index.html`
+- `log:` / `accessLog:` — log levels & rotation policy
+
+### `ols-conf/php.ini`
+
+Tuned for WordPress. Adjust these per workload:
+
+```ini
+memory_limit = 256M
+upload_max_filesize = 64M
+post_max_size = 64M
+max_execution_time = 300
+```
+
+### `ols-admin-conf/admin_config.conf`
+
+| Field          | Required change                       |
+| -------------- | ------------------------------------- |
+| `adminUser`    | leave or change                       |
+| `adminPassword`| **change before first deploy**        |
+| `listener`     | keep `*:7080` inside the container; restrict on the host|
 
 ---
 
 ## Troubleshooting
 
-### `docker compose up` fails because the DB volume is missing
+### `docker compose up` fails — "volume not found"
+
+The expected external volume does not exist. The default name is
+`<project-directory>_db_data` (where `<project-directory>` is the folder
+name that holds `docker-compose.yml`). Create one matching the value in
+`docker-compose.yml`, or bootstrap a fresh one:
 
 ```bash
-docker volume create wwwbanrimkwaecom_brk_data
-# Then restore from a backup (see "Recovery")
+# Either bring the stack up — Docker will create the external volume for you —
+docker compose up -d
+
+# Or create it manually with the name expected by docker-compose.yml:
+docker volume create myproject_db_data
+docker compose up -d database
+# Then import your SQL dump:
+docker compose exec -T database mysql -u root -p"${MYSQL_ROOT_PASSWORD}" \
+    ${DATABASENAME} < /path/to/dump.sql
 ```
 
-### WordPress cannot reach DB
+### WordPress cannot reach the database
 
-- Confirm `DATABASENAME` / `DATABASEUSER` / `DATABASEPASS` in `.env` match
-  the values in `www/wp-config.php`.
+- Confirm `DATABASENAME` / `DATABASEUSER` / `DATABASEPASS` in `.env` match the
+  values in `www/wp-config.php`.
 - From inside the OLS container:
 
   ```bash
@@ -206,22 +360,48 @@ docker volume create wwwbanrimkwaecom_brk_data
       "mysql -h database -u ${DATABASEUSER} -p${DATABASEPASS} -e 'SHOW DATABASES;'"
   ```
 
-### Permission issues on `www/`
+### WebAdmin will not load over SSH tunnel
+
+- Check the tunnel port is forwarded to **127.0.0.1** on the **remote** side.
+- Confirm `7080` is bound inside the container:
+
+  ```bash
+  docker compose exec wordpress ss -tlnp | grep 7080
+  ```
+- If you removed the `7080` mapping, re-add it as
+  `"127.0.0.1:7080:7080"` and re-tunnel.
+
+### File permission issues in `www/`
 
 LSPHP runs as `nobody:nogroup` inside the OLS image. WordPress still works
-because the document root is bind-mounted and writable.
+because the document root is bind-mounted and writable for the container's
+UID/GID. To fix plugin/upload issues, ensure the host UID matches the
+container UID or set up the `www-data` user manually:
+
+```bash
+docker compose exec --user root wordpress \
+    chown -R nobody:nogroup /var/www/html
+```
 
 ---
 
-## Recovery (if the production volume is lost)
+## Recovery (if the DB volume is lost)
 
-If the DB volume no longer exists and you have a SQL dump:
+Recreate the external volume with the name expected by `docker-compose.yml`
+(default: `<project-directory>_db_data`), then import your backup:
 
 ```bash
-docker volume create $(grep DB_VOLUME_NAME .env | cut -d= -f2)
+docker volume create $(basename "$PWD")_db_data
 docker compose up -d database
-# Or restore manually:
+
 docker compose exec -T database mysql -u root -p"${MYSQL_ROOT_PASSWORD}" \
     ${DATABASENAME} < /path/to/backup.sql
+
 docker compose up -d
 ```
+
+---
+
+## License
+
+MIT. Use this stack in any project, commercial or otherwise.
