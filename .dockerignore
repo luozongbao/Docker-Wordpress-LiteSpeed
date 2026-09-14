@@ -1,7 +1,6 @@
 nginx/
 .env
 database/
-dockerfile
 .git/
 .gitignore
 .dockerignore

@@ -1,23 +1,34 @@
 # Banrimkwae.com — WordPress on OpenLiteSpeed
 
 This repository hosts the **production** WordPress stack for `banrimkwae.com` using
-**OpenLiteSpeed** (OLS), **PHP-FPM 8.3**, and **MariaDB**, all wired together with
+**OpenLiteSpeed** (OLS) + **LSPHP** and **MariaDB**, all wired together with
 `docker compose`.
 
-This configuration replaces the previous Nginx-based stack that lives in
+This configuration replaces the previous Nginx + PHP-FPM stack that lives in
 `/home/zongbao/www.banrimkwae.com/`.
+
+---
+
+## Why OpenLiteSpeed?
+
+OpenLiteSpeed bundles **LSPHP (LiteSpeed PHP, a.k.a. LSAPI)** into the same
+container as the web server — there is no separate PHP-FPM container needed.
+Compared to the old Nginx + PHP-FPM setup this means:
+
+- **Fewer containers** (2 instead of 3)
+- **Faster PHP** via in-process LSAPI (no FPM socket hop)
+- **`.htaccess`-like** per-directory rewrites (WordPress permalinks) work natively
 
 ---
 
 ## Architecture
 
-| Service        | Image                                | Role                                  |
-| -------------- | ------------------------------------ | ------------------------------------- |
-| `litespeed`    | `litespeedtech/openlitespeed:latest` | Web server (HTTP/80, HTTPS/443)       |
-| `php`          | custom `php:8.3-fpm` (built locally) | PHP-FPM backend for WordPress         |
-| `db`           | `mariadb:latest`                      | MariaDB — uses the **existing** data volume `brk_data` |
+| Service      | Image                            | Role                                          |
+| ------------ | -------------------------------- | --------------------------------------------- |
+| `database`   | `mariadb:10.11`                  | MariaDB — re-uses existing `brk_data` volume  |
+| `wordpress`  | `litespeedtech/openlitespeed`    | OLS web server **+** LSPHP runtime            |
 
-All three services share the user-defined bridge network `brk-network`.
+Both services share the user-defined bridge network `brk-network`.
 
 ---
 
@@ -25,20 +36,21 @@ All three services share the user-defined bridge network `brk-network`.
 
 ```
 .
-├── docker-compose.yml          # Main stack definition
-├── dockerfile                  # Custom PHP 8.3-FPM image
+├── docker-compose.yml          # Main stack definition (2 services)
 ├── .env.example                # Template for environment variables
 ├── .gitignore
 ├── .dockerignore
 ├── README.md                   # This file
-├── ols-conf/                   # OpenLiteSpeed configuration
+├── database/.gitkeep           # empty (DB is read from existing volume)
+├── ols-conf/                   # OpenLiteSpeed configuration directory
 │   ├── httpd_config.conf       # Main OLS config (listeners, virtual hosts, ...)
-│   ├── php.ini                 # PHP settings used by OLS LSAPI
-│   ├── php-fpm.conf            # PHP-FPM pool config
+│   ├── php.ini                 # PHP runtime settings used by LSPHP
 │   └── vhosts/
 │       └── banrimkwae/
-│           └── vhconf.conf     # Per-vhost config (rewrite, security, gzip, ...)
-└── www/                        # WordPress installation (read/write by containers)
+│           └── vhconf.conf     # Per-vhost config (rewrite, security, cache, ...)
+├── ols-admin-conf/             # OLS WebAdmin config (admin password, listener)
+│   └── admin_config.conf
+└── www/                        # WordPress installation (bind-mounted into container)
 ```
 
 ---
@@ -47,14 +59,15 @@ All three services share the user-defined bridge network `brk-network`.
 
 - Docker Engine 20.10+
 - Docker Compose v2 (`docker compose` CLI)
-- The existing Docker volume `wwwbanrimkwaecom_brk_data` is already present
-  on the host (it was created by the previous Nginx stack and contains the
-  production database — **do not delete it**).
+- The existing Docker volume referenced by `DB_VOLUME_NAME` in `.env`
+  (default: `wwwbanrimkwaecom_brk_data`) is already on the host. It was
+  created by the previous Nginx stack and contains the production database
+  — **do not delete it**.
 
-Verify the volume exists before bringing the stack up:
+Verify it exists:
 
 ```bash
-docker volume inspect wwwbanrimkwaecom_brk_data
+docker volume inspect $(grep DB_VOLUME_NAME .env | cut -d= -f2)
 ```
 
 If it is missing, see the **Recovery** section below.
@@ -70,14 +83,21 @@ If it is missing, see the **Recovery** section below.
    nano .env
    ```
 
-   At minimum set `DATABASENAME`, `DATABASEUSER`, `DATABASEPASS` to match
-   the existing WordPress `wp-config.php`.
+   At minimum set:
+
+   - `DATABASENAME` / `DATABASEUSER` / `DATABASEPASS` — must match the
+     values in `www/wp-config.php`.
+   - `DB_VOLUME_NAME` — the existing volume name on the host
+     (default already points at the production volume).
+   - `MYSQL_ROOT_PASSWORD` — must match what was used with the old stack
+     if you re-use a previously initialized data directory.
 
 2. Make sure `www/` contains the WordPress installation (it should already —
    it is the same folder previously served by Nginx).
 
-3. Verify OLS configs under `ols-conf/` (domain name, Cloudflare IP ranges,
-   security headers, etc.) — they are mounted read-only into the container.
+3. OLS configs under `ols-conf/` are mounted into `/usr/local/lsws/conf`.
+   `ols-admin-conf/` is mounted into `/usr/local/lsws/admin/conf` so you
+   can change the WebAdmin password without losing it across `up`.
 
 4. Bring the stack up:
 
@@ -89,7 +109,7 @@ If it is missing, see the **Recovery** section below.
 
    ```bash
    docker compose ps
-   docker compose logs -f litespeed
+   docker compose logs -f wordpress
    curl -I http://localhost
    ```
 
@@ -98,24 +118,28 @@ If it is missing, see the **Recovery** section below.
 ## Migrating from the old Nginx stack
 
 The old stack lives at `/home/zongbao/www.banrimkwae.com/`.
-The MariaDB **volume is shared** between the two stacks via the external volume
-`wwwbanrimkwaecom_brk_data`, so database data is preserved.
+The MariaDB **volume is shared** between the two stacks via the external
+volume referenced by `DB_VOLUME_NAME`, so database data is preserved.
 
 Migration steps:
 
 ```bash
-# 1. Bring the new stack up first (DB container re-attaches to existing volume)
+# 1. Bring just the database container up first (re-attaches to existing volume)
 cd /home/zongbao/banrimkwae.com
-docker compose up -d db
+docker compose up -d database
 
 # 2. Stop the old stack
 cd /home/zongbao/www.banrimkwae.com
 docker compose down
 
-# 3. Bring the rest of the new stack up
+# 3. Bring up the full new stack
 cd /home/zongbao/banrimkwae.com
 docker compose up -d
 ```
+
+> ℹ️  `docker compose down` on the old stack (without `-v`) keeps the named
+>  volume intact. **Never** run `docker compose down -v` — that would drop
+>  the MariaDB data volume.
 
 ---
 
@@ -125,43 +149,46 @@ docker compose up -d
 # Start / stop
 docker compose up -d
 docker compose down
-docker compose restart litespeed
+docker compose restart wordpress
 
 # Logs
-docker compose logs -f litespeed
-docker compose logs -f php
-docker compose logs -f db
+docker compose logs -f wordpress
+docker compose logs -f database
 
 # Shell into a service
-docker compose exec litespeed bash
-docker compose exec php bash
-docker compose exec db bash
+docker compose exec wordpress bash
+docker compose exec database bash
 
 # Backup database
-docker compose exec db mysqldump \
+docker compose exec database mysqldump \
     -u root -p"${MYSQL_ROOT_PASSWORD:-rootpassword}" \
     ${DATABASENAME} > backup-$(date +%F).sql
+
+# OpenLiteSpeed WebAdmin UI
+# https://<server-ip>:7080
 ```
 
 ---
 
 ## Key OpenLiteSpeed notes
 
-- **Cloudflare real-IP**: `ols-conf/vhosts/banrimkwae/vhconf.conf` declares
-  the Cloudflare IP ranges as trusted. Requests originating from CF will
-  have their real client IP forwarded to PHP.
-- **AI/context path** (`/context/`): protected with the same token used in
-  the old Nginx config (see `$CONTEXT_TOKEN`).
+- **Cloudflare real-IP**: OLS inherits Cloudflare's `CF-Connecting-IP` so
+  PHP sees the real visitor IP. Make sure the cluster is behind Cloudflare
+  when using `vhconf.conf`.
+- **`/context/` path**: protected with the same hard-coded token used in
+  the old Nginx config.
 - **Upload limit**: 64 MB, controlled by both OLS and PHP (`upload_max_filesize`,
   `post_max_size` in `ols-conf/php.ini`).
-- **HTTPS**: port 443 is exposed; you can drop Cloudflare Origin TLS certs
-  into `ols-conf/vhosts/banrimkwae/` and reference them in `vhconf.conf`.
+- **HTTPS**: port 443 is exposed; drop Cloudflare Origin TLS certs into
+  `ols-conf/vhosts/banrimkwae/` and reference them in `vhconf.conf`.
+- **WebAdmin port 7080** is exposed; treat the admin password in
+  `ols-admin-conf/admin_config.conf` like a secret.
 
 ---
 
 ## Troubleshooting
 
-### `docker compose up` fails because volume is missing
+### `docker compose up` fails because the DB volume is missing
 
 ```bash
 docker volume create wwwbanrimkwaecom_brk_data
@@ -172,29 +199,29 @@ docker volume create wwwbanrimkwaecom_brk_data
 
 - Confirm `DATABASENAME` / `DATABASEUSER` / `DATABASEPASS` in `.env` match
   the values in `www/wp-config.php`.
-- From inside the PHP container:
+- From inside the OLS container:
 
   ```bash
-  docker compose exec php bash -c \
-      "mysql -h db -u ${DATABASEUSER} -p${DATABASEPASS} -e 'SHOW DATABASES;'"
+  docker compose exec wordpress bash -c \
+      "mysql -h database -u ${DATABASEUSER} -p${DATABASEPASS} -e 'SHOW DATABASES;'"
   ```
 
 ### Permission issues on `www/`
 
-The PHP container runs `chown -R www-data:www-data /var/www/html` on start.
-OLS writes files as `nobody:nogroup` — this is expected and WordPress will
-still work because PHP owns the document root.
+LSPHP runs as `nobody:nogroup` inside the OLS image. WordPress still works
+because the document root is bind-mounted and writable.
 
 ---
 
 ## Recovery (if the production volume is lost)
 
-If `wwwbanrimkwaecom_brk_data` does not exist and you have a SQL dump:
+If the DB volume no longer exists and you have a SQL dump:
 
 ```bash
-docker volume create wwwbanrimkwaecom_brk_data
-docker compose up -d db        # will run init scripts from /docker-entrypoint-initdb.d if mounted
+docker volume create $(grep DB_VOLUME_NAME .env | cut -d= -f2)
+docker compose up -d database
 # Or restore manually:
-docker compose exec -T db mysql -u root -p"${MYSQL_ROOT_PASSWORD}" \
+docker compose exec -T database mysql -u root -p"${MYSQL_ROOT_PASSWORD}" \
     ${DATABASENAME} < /path/to/backup.sql
+docker compose up -d
 ```
