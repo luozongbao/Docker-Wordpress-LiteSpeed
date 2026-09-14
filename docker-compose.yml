@@ -1,0 +1,65 @@
+services:
+  # OpenLiteSpeed web server (replaces nginx)
+  litespeed:
+    image: litespeedtech/openlitespeed:latest
+    container_name: litespeed
+    restart: unless-stopped
+    ports:
+      - 80:80
+      - 443:443
+      - 7080:7080   # OLS WebAdmin (optional)
+    volumes:
+      - ./www/:/var/www/html
+      - ./ols-conf/vhosts:/usr/local/lsws/conf/vhosts:ro
+      - ./ols-conf/httpd_config.conf:/usr/local/lsws/conf/httpd_config.conf:ro
+      - ./ols-conf/php.ini:/usr/local/lsws/conf/php.ini:ro
+    depends_on:
+      - php
+      - db
+    networks:
+      - brk-network
+
+  # PHP-FPM 8.3 (WordPress runtime)
+  php:
+    build:
+      context: .
+      dockerfile: dockerfile
+    container_name: php
+    restart: unless-stopped
+    volumes:
+      - ./www/:/var/www/html
+      - ./ols-conf/php-fpm.conf:/usr/local/etc/php-fpm.d/www.conf
+    environment:
+      - WORDPRESS_DB_HOST=db
+      - WORDPRESS_DB_NAME=${DATABASENAME}
+      - WORDPRESS_DB_USER=${DATABASEUSER}
+      - WORDPRESS_DB_PASSWORD=${DATABASEPASS}
+    command: >
+      bash -c "chown -R www-data:www-data /var/www/html
+      && php-fpm"
+    networks:
+      - brk-network
+
+  # MariaDB (re-uses existing volume brk_data so no data is lost)
+  db:
+    image: mariadb:latest
+    container_name: db
+    restart: unless-stopped
+    environment:
+      - MYSQL_DATABASE=${DATABASENAME}
+      - MYSQL_USER=${DATABASEUSER}
+      - MYSQL_PASSWORD=${DATABASEPASS}
+      - MYSQL_ROOT_PASSWORD=${MYSQL_ROOT_PASSWORD:-rootpassword}
+    volumes:
+      - brk_data:/var/lib/mysql
+    networks:
+      - brk-network
+
+networks:
+  brk-network:
+    driver: bridge
+
+volumes:
+  brk_data:
+    external: true
+    name: wwwbanrimkwaecom_brk_data

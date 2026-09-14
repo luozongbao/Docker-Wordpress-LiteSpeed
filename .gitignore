@@ -1,0 +1,23 @@
+# WordPress files
+www/*
+!www/.gitkeep
+
+# Database dumps
+database/*
+!database/.gitkeep
+
+# Secrets / local config
+.env
+*.bak
+*.old
+*.conf.bak
+
+# Archives
+*.zip
+*.tar.gz
+
+# Editor / OS
+.DS_Store
+.vscode/
+.idea/
+*.swp

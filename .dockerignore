@@ -1,0 +1,8 @@
+nginx/
+.env
+database/
+dockerfile
+.git/
+.gitignore
+.dockerignore
+README.md
