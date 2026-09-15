@@ -2,6 +2,10 @@
 www/*
 !www/.gitkeep
 
+# Logs files folder
+logs/*
+!logs/.gitkeep
+
 # Database dumps
 database/*
 !database/.gitkeep
@@ -29,7 +33,3 @@ database/*
 *.conf0
 *.conf~
 *#
-
-# logs
-*.log
-logs/*
