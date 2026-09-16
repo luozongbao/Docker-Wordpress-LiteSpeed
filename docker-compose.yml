@@ -3,7 +3,7 @@ services:
   database:
     image: mariadb:10.11
     container_name: wp_mariadb
-    restart: always
+    restart: unless-stopped
     environment:
       - MYSQL_DATABASE=${DATABASENAME}
       - MYSQL_USER=${DATABASEUSER}
@@ -17,7 +17,7 @@ services:
   wordpress:
     image: litespeedtech/openlitespeed:latest
     container_name: wp_ols
-    restart: always
+    restart: unless-stopped
     ports:
       - "80:80"
       - "443:443"
@@ -29,10 +29,12 @@ services:
     volumes:
       - ./www:/var/www/vhosts/localhost/html
       - ./logs:/usr/local/lsws/logs
+      # Persist OLS config + admin htpasswd so settings survive container recreate
+      - ./lsws/conf:/usr/local/lsws/conf
+      - ./lsws/admin-conf:/usr/local/lsws/admin/conf
 # เพิ่มคำสั่งนี้เพื่อเซ็ตรหัสผ่านก่อนแล้วค่อยเริ่มรัน entrypoint ปกติ
     command: >
       sh -c 'echo "$${ADMIN_USER}:$(openssl passwd -1 "$${ADMIN_PASSWORD}")" > /usr/local/lsws/admin/conf/htpasswd && chmod 600 /usr/local/lsws/admin/conf/htpasswd && /entrypoint.sh'
-
     depends_on:
       - database
     networks:
@@ -44,3 +46,4 @@ networks:
 
 volumes:
   db_data:
+  ls_conf:
