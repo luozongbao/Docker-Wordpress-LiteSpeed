@@ -34,7 +34,7 @@ services:
       - ./lsws/admin-conf:/usr/local/lsws/admin/conf
 # เพิ่มคำสั่งนี้เพื่อเซ็ตรหัสผ่านก่อนแล้วค่อยเริ่มรัน entrypoint ปกติ
     command: >
-      sh -c 'echo "$${ADMIN_USER}:$(openssl passwd -1 "$${ADMIN_PASSWORD}")" > /usr/local/lsws/admin/conf/htpasswd && chmod 600 /usr/local/lsws/admin/conf/htpasswd && /entrypoint.sh'
+      sh -c 'if [ ! -f /usr/local/lsws/admin/conf/htpasswd ]; then echo "$${ADMIN_USER}:$(openssl passwd -1 "$${ADMIN_PASSWORD}")" > /usr/local/lsws/admin/conf/htpasswd; fi && chmod 600 /usr/local/lsws/admin/conf/htpasswd && /entrypoint.sh'
     depends_on:
       - database
     networks:
